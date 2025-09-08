@@ -33,9 +33,8 @@ async def chat(req: ChatRequest):
     if req.lead_opt_in and req.email:
         try:
             contact_id = await hubspot_client.upsert_contact(req.email)
-            note_text = "Lead aus Website-Chat. Letzte Nutzerfrage:
-
-" + (req.messages[-1].content if req.messages else "")
+            last_q = req.messages[-1].content if req.messages else ""
+            note_text = f"Lead aus Website-Chat. Letzte Nutzerfrage:\n\n{last_q}"
             if contact_id:
                 await hubspot_client.add_note_to_contact(contact_id, note_text)
         except Exception as e:
