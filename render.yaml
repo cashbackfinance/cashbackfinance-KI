@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: cashback-finance-api
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: MODEL_NAME
+        value: gpt-4o-mini
+      - key: HUBSPOT_PRIVATE_APP_TOKEN
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: https://www.cashbackfinance.de,https://cashbackfinance.jimdosite.com
