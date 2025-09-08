@@ -8,12 +8,12 @@ from middleware import attach_cors
 from services.openai_client import chat_completion
 from services import hubspot_client
 
-app = FastAPI(title="Cashback Finance API", version="1.6.0")
+app = FastAPI(title="Cashback Finance API", version="1.7.0")
 settings = Settings()
 attach_cors(app, settings)
 
 # ------------------------------------------------------------
-# Stil-Guide: Du-Ansprache, Mehrwert, Beispielrechnungen etc.
+# Stil-Guide
 # ------------------------------------------------------------
 STYLE_GUIDE = (
     "Antwortstil (immer): "
@@ -35,43 +35,18 @@ STYLE_GUIDE = (
 )
 
 # ------------------------------------------------------------
-# (Kurz)Wissensblöcke – du kannst sie bei Bedarf jederzeit
-# erweitern; sie sind hier bewusst kompakt gehalten.
+# Wissensblöcke (kompakt)
 # ------------------------------------------------------------
-KNOW_FORWARD = """
-WISSEN: Forward-Darlehen (Zinssicherung für Anschlussfinanzierung)
-- BGB §§488/491; WohnimmobilienkreditRL; §34i GewO; PAngV.
-- Vorlaufzeit 12–60 Monate; Aufschlag je Vorlaufmonat (marktabhängig).
-- Vorteil: Zinsrisiko absichern; Risiko: bei fallenden Zinsen ggf. teurer.
-"""
-KNOW_BAUFI = """
-WISSEN: Baufinanzierung
-- Annuitätendarlehen (Zinsbindung 5–30 J.), Pflichtangaben: Effektivzins/Gesamtkosten, Widerruf 14 Tage.
-- Förderungen: KfW/Landesprogramme; Vorfälligkeitsentschädigung beachten.
-"""
-KNOW_PRIVATKREDIT = """
-WISSEN: Privatkredite/Umschuldung
-- BGB §§488–505; PAngV. Effektivzins bonitäts-/laufzeitabhängig, 14 Tage Widerruf.
-"""
-KNOW_VERSICHERUNG = """
-WISSEN: Versicherungen
-- VVG; §34d GewO; VersVermV/IDD. Beratungsdokumentation & Vergütungstransparenz.
-"""
-KNOW_STROM_GAS = """
-WISSEN: Strom & Gas
-- EnWG; PAngV. Wechsel spart oft 200–500 €/Jahr (orientierend). Bonus-/Laufzeiten prüfen.
-"""
-KNOW_KOMMUNIKATION = """
-WISSEN: Kommunikation
-- TKG; BGB §309 Nr.9; §312k BGB (Kündigungsbutton). Laufzeit idR max. 24 Monate.
-"""
-KNOW_KONTO = """
-WISSEN: Konto
-- KWG/PSD2; BGB Zahlungsdienste. Kontoführungsgebühren & Dispo im Blick; oft bedingungsfrei möglich.
-"""
-KNOW_GELDANLAGE = "WISSEN: Geldanlage – WpHG/§34f GewO/KAGB, Risiken ohne Garantie."
-KNOW_ALTERSVORSORGE = "WISSEN: Altersvorsorge – EStG §10/§10a/§3 Nr.63; Produkt-/Steuerhinweise."
-KNOW_REISE = "WISSEN: Reise – BGB §§651a ff.; über Partner i.d.R. ~4 % Cashback (orientierend)."
+KNOW_FORWARD = "WISSEN: Forward-Darlehen – Zinsrisiko absichern; BGB §§488/491; §34i GewO; PAngV."
+KNOW_BAUFI = "WISSEN: Baufinanzierung – Annuitätendarlehen; Pflichtangaben; Widerruf 14 Tage; KfW-Förderungen."
+KNOW_PRIVATKREDIT = "WISSEN: Privatkredite/Umschuldung – BGB §§488–505; Effektivzins bonitätsabhängig."
+KNOW_VERSICHERUNG = "WISSEN: Versicherungen – VVG; §34d GewO; VersVermV/IDD; Beratungsdoku."
+KNOW_STROM_GAS = "WISSEN: Strom & Gas – EnWG; Wechsel spart oft 200–500 €/Jahr (orientierend)."
+KNOW_KOMMUNIKATION = "WISSEN: Kommunikation – TKG; Laufzeit max. 24 Monate; §312k BGB Kündigungsbutton."
+KNOW_KONTO = "WISSEN: Konto – KWG/PSD2; Gebühren/Dispo beachten."
+KNOW_GELDANLAGE = "WISSEN: Geldanlage – WpHG/§34f GewO/KAGB; Risiken ohne Garantie."
+KNOW_ALTERSVORSORGE = "WISSEN: Altersvorsorge – EStG §10/§10a/§3 Nr.63; steuerliche Aspekte."
+KNOW_REISE = "WISSEN: Reise – BGB §§651a ff.; via Partner ~4 % Cashback (orientierend)."
 
 ALL_KNOWLEDGE = "\n".join([
     KNOW_FORWARD, KNOW_BAUFI, KNOW_PRIVATKREDIT, KNOW_VERSICHERUNG, KNOW_STROM_GAS,
@@ -87,20 +62,27 @@ def build_system_prompt() -> str:
     return f"{base}\n\n{STYLE_GUIDE}\n\n{ALL_KNOWLEDGE}".strip()
 
 # ------------------------------------------------------------
-# Extraktion & Zusammenfassung für HubSpot-Notiz
+# Extraktion & Zusammenfassung (inkl. E-Mail & Einwilligung aus Chat)
 # ------------------------------------------------------------
-_EMAIL = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
-_MONEY = re.compile(r"(?<!\d)(\d{1,3}(?:[.\s]\d{3})*|\d+)(?:[.,]\d+)?\s*(?:€|eur|euro)", re.I)
-_RATE  = re.compile(r"(\d+[.,]?\d*)\s*%")
-_DATE  = re.compile(r"(\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{2,4})")
-_PHONE = re.compile(r"(?:(?:\+|00)\d{1,3}[\s-]?)?(?:\(?\d{2,5}\)?[\s-]?)\d[\d\s-]{5,}")
+EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
+MONEY_RE = re.compile(r"(?<!\d)(\d{1,3}(?:[.\s]\d{3})*|\d+)(?:[.,]\d+)?\s*(?:€|eur|euro)", re.I)
+RATE_RE  = re.compile(r"(\d+[.,]?\d*)\s*%")
+DATE_RE  = re.compile(r"(\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{2,4})")
+PHONE_RE = re.compile(r"(?:(?:\+|00)\d{1,3}[\s-]?)?(?:\(?\d{2,5}\)?[\s-]?)\d[\d\s-]{5,}")
+
+# sehr konservative Erkennung typischer Einwilligungsformulierungen
+CONSENT_RE = re.compile(
+    r"(ich\s+(stimme|willige)\s+ein|du\s+darfst\s+mich\s+kontaktieren|ihr\s+dürft\s+mich\s+kontaktieren|"
+    r"ja[, ]\s*bitte\s+kontaktieren|kontaktaufnahme\s+erlaubt|einwilligung\s+erteilt)",
+    re.I
+)
 
 def extract_entities(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     txt = "\n".join([f"{m.get('role')}: {m.get('content','')}" for m in messages[-30:]])
     out: Dict[str, Any] = {"topics": []}
 
     topics = {
-        "baufi": ["baufinanz", "anschluss", "forward", "zinsbindung", "immobilie", "restschuld"],
+        "baufi": ["baufinanz", "anschluss", "forward", "zinsbindung", "immobilie", "restschuld", "haus kaufen"],
         "privatkredit": ["umschuld", "ratenkredit", "privatkredit", "auto", "fahrzeug", "autokauf"],
         "versicherungen": ["versicherung", "haftpflicht", "kfz", "hausrat", "bu", "kranken"],
         "strom_gas": ["strom", "gas", "grundversorgung", "abschlag", "kwh"],
@@ -113,21 +95,19 @@ def extract_entities(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         if any(k in low for k in kws):
             out["topics"].append(key)
 
-    emails = _EMAIL.findall(txt)
+    emails = EMAIL_RE.findall(txt)
     if emails: out["email_detected"] = emails[-1]
-    money = [m.group(0) for m in _MONEY.finditer(txt)]
-    rates = [r.group(1) for r in _RATE.finditer(txt)]
-    dates = [d.group(1) for d in _DATE.finditer(txt)]
-    phone = _PHONE.search(txt)
+    if CONSENT_RE.search(txt): out["consent_detected"] = True
+
+    money = [m.group(0) for m in MONEY_RE.finditer(txt)]
+    rates = [r.group(1) for r in RATE_RE.finditer(txt)]
+    dates = [d.group(1) for d in DATE_RE.finditer(txt)]
+    phone = PHONE_RE.search(txt)
     if money: out["money_mentions"] = money[:10]
     if rates: out["percent_mentions"] = rates[:10]
     if dates: out["dates"] = dates[:10]
     if phone: out["phone_detected"] = phone.group(0)
 
-    if "baufi" in out["topics"]:
-        out["baufi"] = {}
-    if "privatkredit" in out["topics"]:
-        out["privatkredit"] = {}
     return out
 
 def summarize_conversation(messages: List[Dict[str, Any]], email: Optional[str]) -> str:
@@ -143,7 +123,7 @@ def summarize_conversation(messages: List[Dict[str, Any]], email: Optional[str])
     if ents.get("topics"):
         lines.append("Themen: " + ", ".join(ents["topics"]))
     if ents.get("money_mentions"):
-        lines.append("Geldbeträge im Chat: " + ", ".join(ents["money_mentions"]))
+        lines.append("Beträge im Chat: " + ", ".join(ents["money_mentions"]))
     if ents.get("percent_mentions"):
         lines.append("Prozentsätze im Chat: " + ", ".join(ents["percent_mentions"]))
     if ents.get("dates"):
@@ -176,19 +156,19 @@ async def chat(req: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OpenAI error: {e}")
 
-    # Notiz an HubSpot: nur bei Einwilligung; E-Mail aus Formular ODER Chat
-    if req.lead_opt_in:
-        try:
-            ents = extract_entities([m.model_dump() for m in req.messages])
-            email_for_hubspot = req.email or ents.get("email_detected")
-            if email_for_hubspot:
-                contact_id = await hubspot_client.upsert_contact(email_for_hubspot)
-                note_text = summarize_conversation([m.model_dump() for m in req.messages], email_for_hubspot)
-                if contact_id:
-                    await hubspot_client.add_note_to_contact(contact_id, note_text)
-        except Exception:
-            # HubSpot-Probleme dürfen den Chat nicht stören
-            pass
+    # HubSpot: Einwilligung aus Checkbox ODER Chat-Text + E-Mail aus Formular ODER Chat
+    try:
+        ents = extract_entities([m.model_dump() for m in req.messages])
+        consent = bool(req.lead_opt_in) or bool(ents.get("consent_detected"))
+        email_for_hubspot = req.email or ents.get("email_detected")
+        if consent and email_for_hubspot:
+            contact_id = await hubspot_client.upsert_contact(email_for_hubspot)
+            note_text = summarize_conversation([m.model_dump() for m in req.messages], email_for_hubspot)
+            if contact_id:
+                await hubspot_client.add_note_to_contact(contact_id, note_text)
+    except Exception:
+        # Keine Störung des Chats bei HubSpot-Fehlern
+        pass
 
     return ChatResponse(message=ChatMessage(role="assistant", content=assistant_text))
 
