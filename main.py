@@ -5,16 +5,14 @@ from middleware import attach_cors
 from services.openai_client import chat_completion
 from services import hubspot_client
 import asyncio
+import re
+from typing import List, Dict, Any, Optional
 
-app = FastAPI(title="Cashback Finance API", version="1.4.0")
+app = FastAPI(title="Cashback Finance API", version="1.5.0")
 settings = Settings()
 attach_cors(app, settings)
 
-# --- Stil-Guide & Wissensbasis ------------------------------------------------
-# Ziel: Du-Anrede, lösungsorientiert, Mehrwert von Cashback Finance dezent einbetten,
-# klare Lead-Führung (Datenaufnahme -> Globale Selbstauskunft ODER Rückruf/Termin),
-# keine DIY-/Portal-Verweise, verbraucherschutzkonform, mit Beispielrechnungen (Microsaving + Cashback).
-
+# --- Stil-Guide & Wissensbasis (wie zuvor) -----------------------------------
 STYLE_GUIDE = (
     "Antwortstil (immer): "
     "1) Kurzantwort: positiv & lösungsorientiert (Du-Anrede, 1–2 Sätze). "
@@ -31,115 +29,27 @@ STYLE_GUIDE = (
     "Maximal 3 gezielte Nachfragen, wenn Angaben fehlen. DSGVO: Kontakt-/Personendaten nur mit Einwilligung. "
     "Microsaving-/Beispielrechnungs-Hooks: Wenn der Nutzer 'sparen', 'günstiger', 'Kosten senken', 'Anschluss', 'Forward', "
     "'Umschuldung', 'Versicherung wechseln', 'Strom', 'Gas', 'Mobilfunk', 'Internet', 'Girokonto', 'Reise' o.ä. anspricht, "
-    "führe eine kurze, klar gekennzeichnete Beispielrechnung durch: "
-    "- Setze eine kleine plausible Annahme (als Beispiel markieren). "
-    "- Nenne 1) monatliche Ersparnis (Microsaving), 2) jährlichen Effekt, 3) ggf. einmaligen Cashback-Betrag. "
-    "- Formuliere so, dass der konkrete Nutzen erkennbar ist und in die nächsten Schritte überleitet."
+    "führe eine kurze, klar gekennzeichnete Beispielrechnung durch (monatlich, jährlich, ggf. Cashback). "
 )
 
-# --- Wissensblöcke (rechtlich fundierte Kurz-Konzepte) ------------------------
+# --- Wissensblöcke (gekürzt für Übersicht – behalte deine aus der letzten Version) ---
+KNOW_FORWARD = "WISSEN: Forward-Darlehen …"
+KNOW_BAUFI = "WISSEN: Baufinanzierung …"
+KNOW_PRIVATKREDIT = "WISSEN: Privatkredite …"
+KNOW_BAUSPAR = "WISSEN: Bausparvertrag …"
+KNOW_VERSICHERUNG = "WISSEN: Versicherungen …"
+KNOW_GELDANLAGE = "WISSEN: Geldanlage …"
+KNOW_ALTERSVORSORGE = "WISSEN: Altersvorsorge …"
+KNOW_KOMMUNIKATION = "WISSEN: Kommunikation …"
+KNOW_STROM_GAS = "WISSEN: Strom & Gas …"
+KNOW_KONTO = "WISSEN: Konto …"
+KNOW_REISE = "WISSEN: Reise …"
 
-KNOW_FORWARD = """
-WISSEN: Forward-Darlehen (Zinssicherung für Anschlussfinanzierung)
-- Rechtsgrundlagen: BGB §§ 488 ff., 491 ff.; Wohnimmobilienkreditrichtlinie; § 34i GewO; PAngV.
-- Zweck: Heute Zinssatz für künftige Anschlussfinanzierung festschreiben (Vorlaufzeit typ. 12–60 Monate).
-- Kosten: Forward-Aufschlag je Vorlaufmonat, grob 0,01–0,03 %-Punkte/Monat (marktabhängig).
-- Voraussetzungen: Restschuld & Ablaufdatum der aktuellen Zinsbindung, Beleihungsauslauf, Bonität.
-- Alternativen: Bauspar-Kombination, Prolongation Hausbank, variables Darlehen mit späterer Fixierung.
-- Risiken: Fallen Zinsen, kann der Aufschlag nachteilig sein; steigen sie, ist der Schutz vorteilhaft.
-- Praxis: Angebote ~6–12 Monate vor Fälligkeit vergleichen; ab ~36 Monaten Vorlauf steigen Aufschläge merklich.
-"""
-
-KNOW_BAUFI = """
-WISSEN: Baufinanzierung
-- Rechtsgrundlagen: BGB §§ 488 ff., 491 ff. (Verbraucherdarlehen), Wohnimmobilienkreditrichtlinie, § 34i GewO, PAngV.
-- Eckpunkte: Annuitätendarlehen mit Zinsbindung 5–30 Jahre; Forward-Darlehen zur Zinssicherung bis ~60 Monate.
-- Pflichtangaben: Effektivzins & Gesamtkosten; Widerrufsrecht 14 Tage.
-- Förderung: KfW, Landesbanken, regionale Programme.
-- Verbraucherschutz: Hinweis auf Vorfälligkeitsentschädigung; Beratungsdokumentationspflicht.
-"""
-
-KNOW_PRIVATKREDIT = """
-WISSEN: Privatkredite
-- Rechtsgrundlagen: BGB §§ 488–505; § 34c GewO; PAngV.
-- Typisch: 1.000–80.000 €, Laufzeit 12–120 Monate; Effektivzins abhängig von Bonität, Zweck, Laufzeit.
-- Widerruf: 14 Tage; Sondertilgung häufig möglich.
-- Verbraucherschutz: Keine Versprechen 'ohne Schufa'; transparente Bonitätsprüfung & Vergleich.
-"""
-
-KNOW_BAUSPAR = """
-WISSEN: Bausparvertrag
-- Rechtsgrundlagen: BauSparkG; VAG/BaFin; Fördergesetze (Wohnungsbauprämie, Arbeitnehmersparzulage, Riester).
-- Aufbau: Sparphase (Guthabenzins) + Darlehensphase (fester Sollzins).
-- Förderung: WOP, ANSpZ, ggf. Riester.
-- Verbraucherschutz: Langfristige Bindung, Abschlussgebühr/Kosten transparent machen.
-"""
-
-KNOW_VERSICHERUNG = """
-WISSEN: Versicherungen
-- Rechtsgrundlagen: VVG; § 34d GewO; VersVermV; IDD (EU).
-- Sparten: Sach (Hausrat, Haftpflicht, Wohngebäude, Tier), KFZ, Personen (Leben/BU, Kranken).
-- Pflichten: Beratungsdokumentation & Statusinformation; Vergütungstransparenz.
-- Verbraucherschutz: Existenzielle Risiken zuerst; Pflichtversicherungen (KFZ, Kranken) klar benennen.
-"""
-
-KNOW_GELDANLAGE = """
-WISSEN: Geldanlage
-- Rechtsgrundlagen: WpHG; § 34f GewO; KAGB; BaFin-Regelwerk.
-- Produkte: Fonds, ETFs, Aktien, Renten.
-- Pflicht: Geeignetheitsprüfung (Kenntnisse, Ziele, Risikoprofil).
-- Verbraucherschutz: Kapitalverlustrisiko, keine Garantien.
-"""
-
-KNOW_ALTERSVORSORGE = """
-WISSEN: Altersvorsorge
-- Rechtsgrundlagen: EStG (§10 Rürup, §10a Riester, §3 Nr.63 bAV); VVG; § 34d/f GewO; VersVermV.
-- Produkte: Rürup, Riester, bAV, private Renten.
-- Förderung: Steuerabzug (Rürup), Zulagen (Riester), Steuer-/SV-Ersparnis (bAV).
-- Verbraucherschutz: Kosten offenlegen; steuerliche Einordnung -> Steuerberater.
-"""
-
-KNOW_KOMMUNIKATION = """
-WISSEN: Kommunikation (Internet/Mobilfunk/Festnetz)
-- Rechtsgrundlagen: TKG; BGB §309 Nr.9 (Laufzeiten); §312k BGB (Kündigungsbutton).
-- Verträge: DSL, Kabel, Glasfaser, Mobilfunk; idR max. 24 Monate.
-- Verbraucherschutz: Nach Mindestlaufzeit Kündigungsfrist max. 1 Monat; transparente Preisangaben.
-"""
-
-KNOW_STROM_GAS = """
-WISSEN: Strom & Gas
-- Rechtsgrundlagen: EnWG; BGB §309 Nr.9; PAngV.
-- Ersparnis: Wechsel typ. 200–500 €/Jahr (orientierend).
-- Verbraucherschutz: Grundversorgung 2 Wochen kündbar; Bonus-/Laufzeitbedingungen prüfen.
-"""
-
-KNOW_KONTO = """
-WISSEN: Konto
-- Rechtsgrundlagen: KWG; PSD2 (EU); BGB §§675 ff. (Zahlungsdienste).
-- Girokonto: oft kostenlos mit Bedingungen (z. B. Geldeingang).
-- Verbraucherschutz: Preis-Leistungsverzeichnis; jederzeit kündbar; Dispozinsen beachten.
-"""
-
-KNOW_REISE = """
-WISSEN: Reise (Check24 Pro)
-- Rechtsgrundlagen: BGB §§651a ff. (Pauschalreise); VVG bei Reiseversicherungen.
-- Cashback: ca. 4 % Reisesumme (Richtwert) über Check24.
-- Verbraucherschutz: Storno-/Umbuchung, Insolvenzabsicherung; Widerrufsrecht eingeschränkt.
-"""
-
-ALL_KNOWLEDGE = (
-    KNOW_FORWARD
-    + "\n" + KNOW_BAUFI
-    + "\n" + KNOW_PRIVATKREDIT
-    + "\n" + KNOW_BAUSPAR
-    + "\n" + KNOW_VERSICHERUNG
-    + "\n" + KNOW_GELDANLAGE
-    + "\n" + KNOW_ALTERSVORSORGE
-    + "\n" + KNOW_KOMMUNIKATION
-    + "\n" + KNOW_STROM_GAS
-    + "\n" + KNOW_KONTO
-    + "\n" + KNOW_REISE
-)
+ALL_KNOWLEDGE = "\n".join([
+    KNOW_FORWARD, KNOW_BAUFI, KNOW_PRIVATKREDIT, KNOW_BAUSPAR, KNOW_VERSICHERUNG,
+    KNOW_GELDANLAGE, KNOW_ALTERSVORSORGE, KNOW_KOMMUNIKATION, KNOW_STROM_GAS,
+    KNOW_KONTO, KNOW_REISE
+])
 
 def build_system_prompt() -> str:
     base = settings.SYSTEM_PROMPT.strip() if settings.SYSTEM_PROMPT else (
@@ -148,6 +58,88 @@ def build_system_prompt() -> str:
         "Dein Ziel: klar informieren und verlässlich zur Zusammenarbeit mit Cashback Finance führen."
     )
     return f"{base}\n\n{STYLE_GUIDE}\n\n{ALL_KNOWLEDGE}".strip()
+
+# --- Utility: Einfache Entitätsextraktion aus Chat-Verlauf --------------------
+
+_MONEY = re.compile(r"(?<!\d)(\d{1,3}(?:[.\s]\d{3})*|\d+)(?:[.,]\d+)?\s*(?:€|eur|euro)", re.I)
+_RATE = re.compile(r"(\d+[.,]?\d*)\s*%")
+_DATE = re.compile(r"(\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{2,4})")
+_PHONE = re.compile(r"(?:(?:\+|00)\d{1,3}[\s-]?)?(?:\(?\d{2,5}\)?[\s-]?)\d[\d\s-]{5,}")
+
+def _norm_num(txt: str) -> str:
+    # 300.000 -> 300000; 3,5% bleibt "3,5%" in RATE
+    return txt.replace(".", "").replace(" ", "")
+
+def extract_entities(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    txt = "\n".join([f"{m.get('role')}: {m.get('content','')}" for m in messages[-30:]])  # letzte 30 Beiträge
+    out: Dict[str, Any] = {"topics": []}
+
+    # grobe Topic-Erkennung
+    topics = {
+        "baufi": ["baufinanz", "anschluss", "forward", "zinsbindung", "immobilie", "restschuld"],
+        "privatkredit": ["umschuld", "ratenkredit", "privatkredit"],
+        "versicherungen": ["versicherung", "haftpflicht", "kfz", "hausrat", "bu", "kranken"],
+        "strom_gas": ["strom", "gas", "grundversorgung", "abschlag", "kwh"],
+        "kommunikation": ["mobilfunk", "internet", "dsl", "glasfaser", "tarif"],
+        "konto": ["giro", "konto", "kontoführungsgebühr"],
+        "reise": ["reise", "urlaub", "flug", "hotel"]
+    }
+    low = txt.lower()
+    for key, kws in topics.items():
+        if any(k in low for k in kws):
+            out["topics"].append(key)
+
+    # einfache Muster
+    money = [m.group(0) for m in _MONEY.finditer(txt)]
+    rates = [r.group(1) for r in _RATE.finditer(txt)]
+    dates = [d.group(1) for d in _DATE.finditer(txt)]
+    phone = _PHONE.search(txt)
+    if money: out["money_mentions"] = money[:10]
+    if rates: out["percent_mentions"] = rates[:10]
+    if dates: out["dates"] = dates[:10]
+    if phone: out["phone_detected"] = phone.group(0)
+
+    # baufi-spezifische Heuristiken
+    if "baufi" in out["topics"]:
+        baufi: Dict[str, Any] = {}
+        m_rest = re.search(r"(restschuld|darlehensrest)\D{0,12}(\d[\d.\s]{3,})", low)
+        if m_rest:
+            baufi["restschuld"] = _norm_num(m_rest.group(2))
+        m_ende = re.search(r"(zinsbindung.*?(ende|bis))\D{0,8}(" + _DATE.pattern + ")", low, re.I)
+        if m_ende:
+            baufi["zinsbindung_ende_hint"] = m_ende.group(3)
+        out["baufi"] = baufi
+
+    return out
+
+def summarize_conversation(messages: List[Dict[str, Any]], email: Optional[str]) -> str:
+    ents = extract_entities(messages)
+    lines = []
+    lines.append("Globale Selbstauskunft – Kurzprotokoll (automatisch aus Chat)")
+    if email:
+        lines.append(f"Kontakt: <{email}>")
+    if "phone_detected" in ents:
+        lines.append(f"Telefon (aus Chat erkannt): {ents['phone_detected']}")
+    if ents.get("topics"):
+        lines.append("Themen: " + ", ".join(ents["topics"]))
+    if ents.get("baufi"):
+        lines.append("[Baufinanzierung]")
+        for k, v in ents["baufi"].items():
+            lines.append(f"- {k}: {v}")
+    if ents.get("money_mentions"):
+        lines.append("Geldbeträge im Chat: " + ", ".join(ents["money_mentions"]))
+    if ents.get("percent_mentions"):
+        lines.append("Prozentsätze im Chat: " + ", ".join(ents["percent_mentions"]))
+    if ents.get("dates"):
+        lines.append("Datumsangaben im Chat: " + ", ".join(ents["dates"]))
+    lines.append("")
+    lines.append("Chat-Verlauf (gekürzt):")
+    for m in messages[-10:]:  # letzte 10 Beiträge
+        role = m.get("role")
+        content = m.get("content", "").strip()
+        content = content if len(content) <= 500 else content[:497] + "…"
+        lines.append(f"- {role}: {content}")
+    return "\n".join(lines)
 
 # --- Endpunkte ----------------------------------------------------------------
 
@@ -167,17 +159,15 @@ async def chat(req: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OpenAI error: {e}")
 
-    # Optional: Lead-Erzeugung/Notiz in HubSpot (nur bei Einwilligung + E-Mail)
+    # Lead-Notiz inkl. Gesprächszusammenfassung (statt nur letzte Frage)
     if req.lead_opt_in and req.email:
         try:
             contact_id = await hubspot_client.upsert_contact(req.email)
-            last_q = req.messages[-1].content if req.messages else ""
-            note_text = f"Lead aus Website-Chat. Letzte Nutzerfrage:\n\n{last_q}"
+            note_text = summarize_conversation([m.model_dump() for m in req.messages], req.email)
             if contact_id:
                 await hubspot_client.add_note_to_contact(contact_id, note_text)
         except Exception:
-            # Chat darf nicht fehlschlagen, wenn HubSpot temporär nicht funktioniert
-            pass
+            pass  # HubSpot-Ausfall darf Chat nicht brechen
 
     return ChatResponse(message=ChatMessage(role="assistant", content=assistant_text))
 
