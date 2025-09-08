@@ -8,45 +8,40 @@ from middleware import attach_cors
 from services.openai_client import chat_completion
 from services import hubspot_client
 
-app = FastAPI(title="Cashback Finance API", version="2.1.0")
+app = FastAPI(title="Cashback Finance API", version="2.2.0")
 settings = Settings()
 attach_cors(app, settings)
 
 # ------------------------------------------------------------
-# Stil-Guide (Du-Ansprache, Teaser -> Permission -> Kontaktdaten)
+# Stil-Guide: Teaser → Permission → Kontakt → wenige Eckdaten
 # ------------------------------------------------------------
 STYLE_GUIDE = (
     "Vorgehen (immer): "
-    "A) Fachlicher Teaser in 1–2 Sätzen: zeige konkreten Vorteil (z. B. Zins, Förderungen, Cashback, Microsaving). "
-    "B) Dann Einwilligung abfragen: 'Darf ich deine Angaben an Cashback Finance übermitteln, ja?' "
-    "C) Falls Zustimmung: ZUERST Name + E-Mail/Telefon erfragen; erst dann weitere Eckdaten (kurz, maximal 3 Rückfragen). "
-    "D) Abschluss: Bestätigen, dass wir bündeln/übermitteln und ein Rückruf/Termin möglich ist. "
-    "Regeln: Du-Ansprache, kein Druck, keine Vergleichsportale, keine Garantien/Zinszusagen; "
-    "Hinweis 'unverbindlich, markt- und bonitätsabhängig' bei Zahlen; "
-    "Mehrwert dezent: Einsparungen + Microsaving + bis zu 20 % Cashback auf Provisionen. "
+    "A) Fachlicher Teaser (1–2 Sätze) mit praktischem Mehrwert (Einsparungen, Förderungen, bis zu 20 % Cashback auf Provisionen). "
+    "B) Einwilligung abfragen: 'Darf ich deine Angaben an Cashback Finance übermitteln, ja?' "
+    "C) Bei Zustimmung: zuerst Name + E-Mail/Telefon, danach max. 3 Eckdatenfragen. "
+    "D) Abschluss: bestätigen, dass wir bündeln/übermitteln; optional Rückruf/Termin anbieten. "
+    "Regeln: Du-Ansprache, verbraucherschutzkonform, keine Portale/DIY-Aufforderungen, keine Garantien/Zinszusagen; "
+    "Zahlen stets 'unverbindlich, markt- und bonitätsabhängig'. "
 )
 
-# Kurzer Wissens-Block (kompakt halten, erweiterbar)
-KNOW = """
-WISSEN (Auszug):
-- Baufinanzierung: Annuitätendarlehen, Zinsbindung, Effektivzins/Gesamtkosten, Widerruf 14 Tage; KfW/Programme möglich.
-- Forward-Darlehen: Zinsabsicherung für Anschluss; BGB §§488/491; §34i GewO; PAngV.
-- Privatkredit/Umschuldung: BGB §§488–505; Effektivzins bonitäts-/laufzeitabhängig.
-- Versicherungen: VVG; §34d GewO; Beratungsdoku/IDD.
-- Strom/Gas: EnWG; Wechsel spart oft 200–500 €/Jahr (orientierend).
-- Kommunikation: TKG; Maxlaufzeit 24M; §312k Kündigungsbutton.
-- Konto: KWG/PSD2; Gebühren/Dispo beachten.
-"""
+KNOW = (
+    "WISSEN (Auszug): "
+    "Baufinanzierung: Annuitätendarlehen, Zinsbindung, Effektivzins/Gesamtkosten, Widerruf 14 Tage; KfW. "
+    "Forward-Darlehen: Zinsabsicherung; BGB §§488/491; §34i GewO; PAngV. "
+    "Privatkredit/Umschuldung: BGB §§488–505. Versicherungen: VVG; §34d GewO. "
+    "Strom/Gas: EnWG; Wechsel spart oft 200–500 €/J (orientierend). Kommunikation: TKG; §312k. Konto: PSD2."
+)
 
 def build_system_prompt() -> str:
     base = settings.SYSTEM_PROMPT.strip() if settings.SYSTEM_PROMPT else (
         "Du bist die KI von Cashback Finance. Sprich konsequent in der Du-Form, hilfsbereit, klar, seriös. "
-        "Ziel: informieren, entlasten, und verlässlich zur Zusammenarbeit mit Cashback Finance führen."
+        "Ziel: informieren, entlasten und verlässlich zur Zusammenarbeit mit Cashback Finance führen."
     )
     return f"{base}\n\n{STYLE_GUIDE}\n\n{KNOW}".strip()
 
 # ------------------------------------------------------------
-# Extraktion & Zusammenfassung (Consent/E-Mail aus Chat)
+# Extraktion (E-Mail, Telefon, Consent) + Zusammenfassung
 # ------------------------------------------------------------
 EMAIL_RE   = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
 PHONE_RE   = re.compile(r"(?:(?:\+|00)\d{1,3}[\s-]?)?(?:\(?\d{2,5}\)?[\s-]?)\d[\d\s-]{5,}")
@@ -54,37 +49,68 @@ MONEY_RE   = re.compile(r"(?<!\d)(\d{1,3}(?:[.\s]\d{3})*|\d+)(?:[.,]\d+)?\s*(?:�
 RATE_RE    = re.compile(r"(\d+[.,]?\d*)\s*%")
 DATE_RE    = re.compile(r"(\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{2,4})")
 
-# Robuste Consent-Erkennung:
-# - Explizite Formeln (ich willige ein, ihr dürft mich kontaktieren, etc.)
-# - UND Bestätigungen mit Schlüsselwörtern (übermitteln/weiterleiten/weitergeben/speichern/aufnehmen/erfassen)
-#   kombiniert mit ok/ja/einverstanden/passt
+# 1) Explizite Einwilligung (klar-juristisch)
 CONSENT_EXPLICIT = re.compile(
     r"(ich\s+(stimme|willige)\s+ein|du\s*darfst\s*mich\s*kontaktieren|ihr\s*dürft\s*mich\s*kontaktieren|"
     r"ja[, ]?\s*bitte\s*kontaktieren|kontaktaufnahme\s*(ist\s*)?erlaubt|einwilligung\s*(ist\s*)?erteilt)",
     re.I
 )
-CONSENT_KEYWORD_OK = re.compile(
-    r"\b(übermitteln|weiterleiten|weitergeben|speichern|aufnehmen|erfassen)\b.*\b(ok|in ordnung|einverstanden|passt|ja)\b"
-    r"|"
-    r"\b(ok|in ordnung|einverstanden|passt|ja)\b.*\b(übermitteln|weiterleiten|weitergeben|speichern|aufnehmen|erfassen)\b",
+# 2) Intent-basierte Zustimmung (komfortabel): Übermitteln/weiterleiten/bündeln/aufnehmen/erfassen/senden/schicken
+CONSENT_INTENT_VERB = r"(übermitteln|weiterleiten|weitergeben|bündeln|aufnehmen|erfassen|senden|schicken)"
+CONSENT_OK_WORD     = r"(ok|in ordnung|einverstanden|passt|ja|bitte)"
+CONSENT_KEYWORD_OK  = re.compile(
+    rf"\b{CONSENT_INTENT_VERB}\b.*\b{CONSENT_OK_WORD}\b|\b{CONSENT_OK_WORD}\b.*\b{CONSENT_INTENT_VERB}\b",
     re.I
 )
+# 3) Reine Intent-Formulierungen (ohne OK), z. B. "bitte bündeln", "eckdaten aufnehmen", "an cashback finance schicken"
+CONSENT_INTENT_SOFT = re.compile(
+    rf"(an\s+cashback\s+finance\s+(schicken|senden|weiterleiten)|"
+    rf"bitte\s+{CONSENT_INTENT_VERB}|"
+    rf"eckdaten\s+{CONSENT_INTENT_VERB}|"
+    rf"global[e]?\s+selbstauskunft\s+(erstellen|anfangen|starten|bündeln)|"
+    rf"{CONSENT_INTENT_VERB})",
+    re.I
+)
+NEGATION_NEAR = re.compile(r"\b(nicht|kein|keine|nein|stop|stopp|abbrechen)\b", re.I)
+
+def _msgs_text(messages: List[Dict[str, Any]], only_user: bool = False, last_n: int = 20) -> List[str]:
+    msgs = messages[-last_n:]
+    if only_user:
+        msgs = [m for m in msgs if (m.get("role") == "user")]
+    return [m.get("content") or "" for m in msgs]
+
+def detect_consent(messages: List[Dict[str, Any]]) -> bool:
+    user_texts = _msgs_text(messages, only_user=True, last_n=20)
+    joined = "\n".join(user_texts)
+
+    # 1) Explizit?
+    if CONSENT_EXPLICIT.search(joined):
+        return True
+
+    # 2) Intent + OK in einem Satz?
+    if any(CONSENT_KEYWORD_OK.search(t) for t in user_texts):
+        # Negation in unmittelbarer Nähe verhindert Zustimmung
+        if not any(NEGATION_NEAR.search(t) for t in user_texts):
+            return True
+
+    # 3) Reiner Intent (z. B. "bitte bündeln", "eckdaten aufnehmen") ohne Negation
+    for t in user_texts:
+        if CONSENT_INTENT_SOFT.search(t) and not NEGATION_NEAR.search(t):
+            return True
+
+    return False
 
 def extract_entities(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     txt = "\n".join([f"{m.get('role')}: {m.get('content','')}" for m in messages[-30:]])
     out: Dict[str, Any] = {}
-
     emails = EMAIL_RE.findall(txt)
     if emails:
         out["email_detected"] = emails[-1]
-
     phone = PHONE_RE.search(txt)
     if phone:
         out["phone_detected"] = phone.group(0)
-
-    if CONSENT_EXPLICIT.search(txt) or CONSENT_KEYWORD_OK.search(txt):
+    if detect_consent(messages):
         out["consent_detected"] = True
-
     money = [m.group(0) for m in MONEY_RE.finditer(txt)]
     rates = [r.group(1) for r in RATE_RE.finditer(txt)]
     dates = [d.group(1) for d in DATE_RE.finditer(txt)]
@@ -98,7 +124,7 @@ def summarize_conversation(messages: List[Dict[str, Any]], email: Optional[str])
     lines = []
     lines.append("Globale Selbstauskunft – Kurzprotokoll (automatisch aus Chat)")
     if email:
-        lines.append(f"Kontakt (erkannt/angegeben): <{email}>")
+        lines.append(f"Kontakt (angegeben/erkannt): <{email}>")
     if ents.get("phone_detected"):
         lines.append(f"Telefon (aus Chat): {ents['phone_detected']}")
     if ents.get("money_mentions"):
@@ -135,20 +161,19 @@ async def chat(req: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OpenAI error: {e}")
 
-    # Chat-basierte Einwilligung + E-Mail (aus Chat oder req.email) → HubSpot schreiben
+    # Reiner Chat-Consent (+ E-Mail aus Chat ODER req.email) → HubSpot
     try:
         msgs = [m.model_dump() for m in req.messages]
         ents = extract_entities(msgs)
         consent = bool(ents.get("consent_detected"))
         email_for_hubspot = req.email or ents.get("email_detected")
-
         if consent and email_for_hubspot:
             contact_id = await hubspot_client.upsert_contact(email_for_hubspot)
             note_text = summarize_conversation(msgs, email_for_hubspot)
             if contact_id:
                 await hubspot_client.add_note_to_contact(contact_id, note_text)
     except Exception:
-        # HubSpot darf den Chat nie stören
+        # HubSpot darf nie den Chat blockieren
         pass
 
     return ChatResponse(message=ChatMessage(role="assistant", content=assistant_text))
