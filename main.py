@@ -1,186 +1,127 @@
-from fastapi import FastAPI, HTTPException
-from models import ChatRequest, ChatResponse, ChatMessage, LeadRequest, LeadResponse
-from settings import Settings
-from middleware import attach_cors
-from services.openai_client import chat_completion
-from services import hubspot_client
-import asyncio
-import re
-from typing import List, Dict, Any, Optional
+<!-- ==== Cashback Finance – Chat Widget (links, Du, mit E-Mail-Autofill) ==== -->
+<div id="cbf-root" style="--cbf-bg:#0ea5e9; --cbf-accent:#10b981; --cbf-text:#0f172a; --cbf-muted:#6b7280; --cbf-surface:#ffffff; --cbf-bubble:#f8fafc; --cbf-user:#e6fffa; max-width:760px;margin:24px auto;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;color:var(--cbf-text);">
+  <div style="display:flex;align-items:center;gap:12px;background:linear-gradient(135deg,var(--cbf-bg),var(--cbf-accent));padding:14px 16px;border-radius:16px 16px 0 0;color:#fff;">
+    <div style="width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,.2);display:flex;align-items:center;justify-content:center;font-weight:800;letter-spacing:.5px;">CBF</div>
+    <div style="flex:1;">
+      <div style="font-weight:700;line-height:1;">Cashback Finance – KI-Chat</div>
+      <div style="font-size:12px;opacity:.9;">Kurz. Klar. Lösungsorientiert. (Datenschutz: Keine lokale PII-Speicherung. Kontakt nur mit Einwilligung.)</div>
+    </div>
+  </div>
 
-app = FastAPI(title="Cashback Finance API", version="1.5.0")
-settings = Settings()
-attach_cors(app, settings)
+  <div id="cbf-chat" style="border:1px solid #e5e7eb;border-top:0;border-bottom:0;background:var(--cbf-surface);max-height:520px;min-height:320px;overflow:auto;padding:16px;scroll-behavior:smooth;"></div>
 
-# --- Stil-Guide & Wissensbasis (wie zuvor) -----------------------------------
-STYLE_GUIDE = (
-    "Antwortstil (immer): "
-    "1) Kurzantwort: positiv & lösungsorientiert (Du-Anrede, 1–2 Sätze). "
-    "2) Einordnung: 2–4 Sätze, was das praktisch bedeutet (sachlich, verbraucherschutzkonform, widerspruchsfrei). "
-    "3) Voraussetzungen & typische Konditionen: stichpunktartig; immer 'unverbindlich, markt- und bonitätsabhängig'. "
-    "4) Cashback-Mehrwert (dezent & kontextbezogen): "
-    "   Hebe hervor, dass wir über Einsparungen, Microsaving und 20 % Cashback auf Provisionen "
-    "   einen echten finanziellen Vorteil für dich erzeugen – praxisnah, nicht aufdringlich. "
-    "5) Nächste Schritte (Lead-Pfad): "
-    "   A) Ich nehme jetzt deine Eckdaten auf und bündele sie zur 'Globalen Selbstauskunft' (du erhältst sie von uns). "
-    "   B) Oder wir machen direkt einen Rückruf/Termin mit Cashback Finance. "
-    "6) Abschlussfrage: 'Sollen wir deine Daten jetzt erfassen oder möchtest du lieber einen Rückruf?' "
-    "Regeln: Du-Anrede. Keine Vergleichsportale/DIY-Aufforderungen. Keine Garantien/Zinszusagen. "
-    "Maximal 3 gezielte Nachfragen, wenn Angaben fehlen. DSGVO: Kontakt-/Personendaten nur mit Einwilligung. "
-    "Microsaving-/Beispielrechnungs-Hooks: Wenn der Nutzer 'sparen', 'günstiger', 'Kosten senken', 'Anschluss', 'Forward', "
-    "'Umschuldung', 'Versicherung wechseln', 'Strom', 'Gas', 'Mobilfunk', 'Internet', 'Girokonto', 'Reise' o.ä. anspricht, "
-    "führe eine kurze, klar gekennzeichnete Beispielrechnung durch (monatlich, jährlich, ggf. Cashback). "
-)
+  <form id="cbf-form" style="border:1px solid #e5e7eb;border-top:0;background:#fff;padding:12px;border-radius:0 0 16px 16px;position:relative;">
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+      <textarea id="cbf-input" placeholder="Deine Frage (z. B. Baufinanzierung, Versicherung, Kommunikation …)"
+        style="flex:1;min-height:64px;max-height:160px;padding:10px 12px;border:1px solid #e5e7eb;border-radius:12px;resize:vertical;font-family:inherit;"></textarea>
+      <button type="submit" id="cbf-send" style="padding:10px 14px;border:0;border-radius:12px;background:var(--cbf-accent);color:#fff;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:8px;">
+        <span>Senden</span><span aria-hidden="true" style="display:inline-block;transform:translateY(1px)">➤</span>
+      </button>
+    </div>
 
-# --- Wissensblöcke (gekürzt für Übersicht – behalte deine aus der letzten Version) ---
-KNOW_FORWARD = "WISSEN: Forward-Darlehen …"
-KNOW_BAUFI = "WISSEN: Baufinanzierung …"
-KNOW_PRIVATKREDIT = "WISSEN: Privatkredite …"
-KNOW_BAUSPAR = "WISSEN: Bausparvertrag …"
-KNOW_VERSICHERUNG = "WISSEN: Versicherungen …"
-KNOW_GELDANLAGE = "WISSEN: Geldanlage …"
-KNOW_ALTERSVORSORGE = "WISSEN: Altersvorsorge …"
-KNOW_KOMMUNIKATION = "WISSEN: Kommunikation …"
-KNOW_STROM_GAS = "WISSEN: Strom & Gas …"
-KNOW_KONTO = "WISSEN: Konto …"
-KNOW_REISE = "WISSEN: Reise …"
+    <div style="display:flex;gap:10px;align-items:center;margin-top:10px;font-size:13px;color:var(--cbf-muted);flex-wrap:wrap;">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="cbf-lead"> Ich möchte kontaktiert werden
+      </label>
+      <input type="email" id="cbf-email" placeholder="E-Mail (nur bei Kontaktwunsch)"
+        style="flex:1;min-width:220px;padding:8px 10px;border:1px solid #e5e7eb;border-radius:10px;">
+      <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
+        <span style="width:8px;height:8px;border-radius:50%;background:var(--cbf-accent);display:inline-block;"></span>
+        <span style="font-size:12px;color:var(--cbf-muted);">Online</span>
+      </div>
+    </div>
+  </form>
+</div>
 
-ALL_KNOWLEDGE = "\n".join([
-    KNOW_FORWARD, KNOW_BAUFI, KNOW_PRIVATKREDIT, KNOW_BAUSPAR, KNOW_VERSICHERUNG,
-    KNOW_GELDANLAGE, KNOW_ALTERSVORSORGE, KNOW_KOMMUNIKATION, KNOW_STROM_GAS,
-    KNOW_KONTO, KNOW_REISE
-])
+<script>
+  const BACKEND_URL = "https://cashbackfinance-ki.onrender.com";
+  const chat = document.getElementById("cbf-chat");
+  const form = document.getElementById("cbf-form");
+  const input = document.getElementById("cbf-input");
+  const lead = document.getElementById("cbf-lead");
+  const email = document.getElementById("cbf-email");
+  const sendBtn = document.getElementById("cbf-send");
+  const convo = [];
 
-def build_system_prompt() -> str:
-    base = settings.SYSTEM_PROMPT.strip() if settings.SYSTEM_PROMPT else (
-        "Du bist die KI von Cashback Finance. Sprich Nutzer konsequent in der Du-Form an, "
-        "freundlich, respektvoll und vertrauensvoll. "
-        "Dein Ziel: klar informieren und verlässlich zur Zusammenarbeit mit Cashback Finance führen."
-    )
-    return f"{base}\n\n{STYLE_GUIDE}\n\n{ALL_KNOWLEDGE}".strip()
+  function bubble(role, text) {
+    const row = document.createElement("div");
+    row.style.display = "flex"; row.style.gap = "10px"; row.style.margin = "10px 0";
+    row.style.alignItems = "flex-start";
+    row.style.justifyContent = role === "user" ? "flex-end" : "flex-start";
 
-# --- Utility: Einfache Entitätsextraktion aus Chat-Verlauf --------------------
+    const b = document.createElement("div");
+    b.style.maxWidth = "80%"; b.style.padding = "10px 12px"; b.style.borderRadius = "12px";
+    b.style.whiteSpace = "pre-wrap"; b.style.textAlign = "left"; b.style.lineHeight = "1.4";
+    b.style.border = "1px solid #e5e7eb";
+    b.style.background = role === "user" ? "var(--cbf-user)" : "var(--cbf-bubble)";
+    b.textContent = text;
 
-_MONEY = re.compile(r"(?<!\d)(\d{1,3}(?:[.\s]\d{3})*|\d+)(?:[.,]\d+)?\s*(?:€|eur|euro)", re.I)
-_RATE = re.compile(r"(\d+[.,]?\d*)\s*%")
-_DATE = re.compile(r"(\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{2,4})")
-_PHONE = re.compile(r"(?:(?:\+|00)\d{1,3}[\s-]?)?(?:\(?\d{2,5}\)?[\s-]?)\d[\d\s-]{5,}")
-
-def _norm_num(txt: str) -> str:
-    # 300.000 -> 300000; 3,5% bleibt "3,5%" in RATE
-    return txt.replace(".", "").replace(" ", "")
-
-def extract_entities(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
-    txt = "\n".join([f"{m.get('role')}: {m.get('content','')}" for m in messages[-30:]])  # letzte 30 Beiträge
-    out: Dict[str, Any] = {"topics": []}
-
-    # grobe Topic-Erkennung
-    topics = {
-        "baufi": ["baufinanz", "anschluss", "forward", "zinsbindung", "immobilie", "restschuld"],
-        "privatkredit": ["umschuld", "ratenkredit", "privatkredit"],
-        "versicherungen": ["versicherung", "haftpflicht", "kfz", "hausrat", "bu", "kranken"],
-        "strom_gas": ["strom", "gas", "grundversorgung", "abschlag", "kwh"],
-        "kommunikation": ["mobilfunk", "internet", "dsl", "glasfaser", "tarif"],
-        "konto": ["giro", "konto", "kontoführungsgebühr"],
-        "reise": ["reise", "urlaub", "flug", "hotel"]
+    if (role === "ai") {
+      const av = document.createElement("div");
+      av.style.width = "28px"; av.style.height = "28px"; av.style.borderRadius = "50%";
+      av.style.background = "linear-gradient(135deg,var(--cbf-bg),var(--cbf-accent))";
+      av.style.display = "flex"; av.style.alignItems = "center"; av.style.justifyContent = "center";
+      av.style.color = "#fff"; av.style.fontSize = "12px"; av.style.fontWeight = "700"; av.textContent = "AI";
+      row.appendChild(av);
     }
-    low = txt.lower()
-    for key, kws in topics.items():
-        if any(k in low for k in kws):
-            out["topics"].append(key)
+    row.appendChild(b);
+    chat.appendChild(row);
+    chat.scrollTop = chat.scrollHeight;
+  }
 
-    # einfache Muster
-    money = [m.group(0) for m in _MONEY.finditer(txt)]
-    rates = [r.group(1) for r in _RATE.finditer(txt)]
-    dates = [d.group(1) for d in _DATE.finditer(txt)]
-    phone = _PHONE.search(txt)
-    if money: out["money_mentions"] = money[:10]
-    if rates: out["percent_mentions"] = rates[:10]
-    if dates: out["dates"] = dates[:10]
-    if phone: out["phone_detected"] = phone.group(0)
+  function typingRow() {
+    const row = document.createElement("div");
+    row.style.display = "flex"; row.style.gap = "10px"; row.style.margin = "10px 0";
+    const av = document.createElement("div");
+    av.style.width = "28px"; av.style.height = "28px"; av.style.borderRadius = "50%";
+    av.style.background = "linear-gradient(135deg,var(--cbf-bg),var(--cbf-accent))";
+    av.style.display = "flex"; av.style.alignItems = "center"; av.style.justifyContent = "center";
+    av.style.color = "#fff"; av.style.fontSize = "12px"; av.style.fontWeight = "700"; av.textContent = "AI";
+    const dots = document.createElement("div");
+    dots.style.background = "var(--cbf-bubble)"; dots.style.border = "1px solid #e5e7eb";
+    dots.style.borderRadius = "12px"; dots.style.padding = "10px 12px"; dots.style.maxWidth = "80%";
+    dots.style.textAlign = "left"; dots.style.lineHeight = "1.4";
+    dots.innerHTML = '<span class="cbf-dots" style="display:inline-block;letter-spacing:2px;">●●●</span>';
+    row.appendChild(av); row.appendChild(dots); chat.appendChild(row); chat.scrollTop = chat.scrollHeight;
+    let i = 0; const intv = setInterval(()=>{ const el = dots.querySelector(".cbf-dots"); if(!el){clearInterval(intv);return;}
+      el.textContent = ["●","●●","●●●"][i%3]; i++; }, 350);
+    row._interval = intv; return row;
+  }
 
-    # baufi-spezifische Heuristiken
-    if "baufi" in out["topics"]:
-        baufi: Dict[str, Any] = {}
-        m_rest = re.search(r"(restschuld|darlehensrest)\D{0,12}(\d[\d.\s]{3,})", low)
-        if m_rest:
-            baufi["restschuld"] = _norm_num(m_rest.group(2))
-        m_ende = re.search(r"(zinsbindung.*?(ende|bis))\D{0,8}(" + _DATE.pattern + ")", low, re.I)
-        if m_ende:
-            baufi["zinsbindung_ende_hint"] = m_ende.group(3)
-        out["baufi"] = baufi
+  const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+  function maybeAutoFillEmailFrom(text){
+    const m = text.match(EMAIL_RE);
+    if(m && !email.value){
+      email.value = m[0];
+      const n = document.createElement("div");
+      n.textContent = "E-Mail erkannt. Bitte das Einwilligungs-Häkchen setzen, damit ich deine Angaben sicher speichern darf.";
+      n.style.fontSize="12px"; n.style.color="#6b7280"; n.style.marginTop="6px";
+      form.appendChild(n);
+    }
+  }
 
-    return out
+  async function sendMessage(text) {
+    bubble("user", text);
+    maybeAutoFillEmailFrom(text); // E-Mail aus Chat automatisch übernehmen
+    convo.push({ role: "user", content: text });
+    const t = typingRow(); sendBtn.disabled = true;
 
-def summarize_conversation(messages: List[Dict[str, Any]], email: Optional[str]) -> str:
-    ents = extract_entities(messages)
-    lines = []
-    lines.append("Globale Selbstauskunft – Kurzprotokoll (automatisch aus Chat)")
-    if email:
-        lines.append(f"Kontakt: <{email}>")
-    if "phone_detected" in ents:
-        lines.append(f"Telefon (aus Chat erkannt): {ents['phone_detected']}")
-    if ents.get("topics"):
-        lines.append("Themen: " + ", ".join(ents["topics"]))
-    if ents.get("baufi"):
-        lines.append("[Baufinanzierung]")
-        for k, v in ents["baufi"].items():
-            lines.append(f"- {k}: {v}")
-    if ents.get("money_mentions"):
-        lines.append("Geldbeträge im Chat: " + ", ".join(ents["money_mentions"]))
-    if ents.get("percent_mentions"):
-        lines.append("Prozentsätze im Chat: " + ", ".join(ents["percent_mentions"]))
-    if ents.get("dates"):
-        lines.append("Datumsangaben im Chat: " + ", ".join(ents["dates"]))
-    lines.append("")
-    lines.append("Chat-Verlauf (gekürzt):")
-    for m in messages[-10:]:  # letzte 10 Beiträge
-        role = m.get("role")
-        content = m.get("content", "").strip()
-        content = content if len(content) <= 500 else content[:497] + "…"
-        lines.append(f"- {role}: {content}")
-    return "\n".join(lines)
+    const payload = { messages: convo, lead_opt_in: !!lead.checked, email: email.value || null };
 
-# --- Endpunkte ----------------------------------------------------------------
+    try {
+      const res = await fetch(`${BACKEND_URL}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (!res.ok) { const err = await res.json().catch(()=>({})); throw new Error(err.detail || `HTTP ${res.status}`); }
+      const data = await res.json();
+      clearInterval(t._interval); t.remove();
+      const reply = data?.message?.content || "(keine Antwort)";
+      convo.push({ role: "assistant", content: reply });
+      bubble("ai", reply);
+    } catch (e) {
+      clearInterval(t._interval); t.remove(); bubble("ai", "Fehler: " + e.message);
+    } finally { sendBtn.disabled = false; }
+  }
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-@app.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
-    system_prompt = build_system_prompt()
-    try:
-        assistant_text = chat_completion(
-            messages=[m.model_dump() for m in req.messages],
-            system_prompt=system_prompt,
-            model=settings.MODEL_NAME
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OpenAI error: {e}")
-
-    # Lead-Notiz inkl. Gesprächszusammenfassung (statt nur letzte Frage)
-    if req.lead_opt_in and req.email:
-        try:
-            contact_id = await hubspot_client.upsert_contact(req.email)
-            note_text = summarize_conversation([m.model_dump() for m in req.messages], req.email)
-            if contact_id:
-                await hubspot_client.add_note_to_contact(contact_id, note_text)
-        except Exception:
-            pass  # HubSpot-Ausfall darf Chat nicht brechen
-
-    return ChatResponse(message=ChatMessage(role="assistant", content=assistant_text))
-
-@app.post("/lead", response_model=LeadResponse)
-async def lead(req: LeadRequest):
-    if not settings.HUBSPOT_PRIVATE_APP_TOKEN:
-        return LeadResponse(status="skipped", detail="No HUBSPOT_PRIVATE_APP_TOKEN set")
-    try:
-        contact_id = await hubspot_client.upsert_contact(
-            req.email, req.firstname, req.lastname, req.phone
-        )
-        if req.context and contact_id:
-            await hubspot_client.add_note_to_contact(contact_id, req.context)
-        return LeadResponse(status="ok", hubspot_contact_id=contact_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"HubSpot error: {e}")
+  form.addEventListener("submit", (e) => { e.preventDefault(); const text = input.value.trim(); if (!text) return; input.value=""; sendMessage(text); });
+  bubble("ai","Hallo! Ich bin die KI von Cashback Finance. Wobei darf ich dir helfen? 😊");
+</script>
+<!-- ==== /Widget ==== -->
