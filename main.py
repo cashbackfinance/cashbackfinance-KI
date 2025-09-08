@@ -1,5 +1,4 @@
 from fastapi import FastAPI, HTTPException
-from typing import Dict
 from models import ChatRequest, ChatResponse, ChatMessage, LeadRequest, LeadResponse
 from settings import Settings
 from middleware import attach_cors
@@ -7,29 +6,35 @@ from services.openai_client import chat_completion
 from services import hubspot_client
 import asyncio
 
-app = FastAPI(title="Cashback Finance API", version="1.3.0")
+app = FastAPI(title="Cashback Finance API", version="1.4.0")
 settings = Settings()
 attach_cors(app, settings)
 
 # --- Stil-Guide & Wissensbasis ------------------------------------------------
 # Ziel: Du-Anrede, lösungsorientiert, Mehrwert von Cashback Finance dezent einbetten,
 # klare Lead-Führung (Datenaufnahme -> Globale Selbstauskunft ODER Rückruf/Termin),
-# keine DIY-/Portal-Verweise, verbraucherschutzkonform.
+# keine DIY-/Portal-Verweise, verbraucherschutzkonform, mit Beispielrechnungen (Microsaving + Cashback).
 
 STYLE_GUIDE = (
     "Antwortstil (immer): "
     "1) Kurzantwort: positiv & lösungsorientiert (Du-Anrede, 1–2 Sätze). "
     "2) Einordnung: 2–4 Sätze, was das praktisch bedeutet (sachlich, verbraucherschutzkonform, widerspruchsfrei). "
-    "3) Voraussetzungen & typische Konditionen: stichpunktartig, immer 'unverbindlich, markt- und bonitätsabhängig'. "
-    "4) Cashback-Mehrwert (dezent, kontextbezogen): "
-    "   Hebe hervor, dass wir durch Einsparungen, Microsaving und 20 % Cashback auf Provisionen "
-    "   echten finanziellen Vorteil erzeugen (praxisnah, nicht aufdringlich). "
+    "3) Voraussetzungen & typische Konditionen: stichpunktartig; immer 'unverbindlich, markt- und bonitätsabhängig'. "
+    "4) Cashback-Mehrwert (dezent & kontextbezogen): "
+    "   Hebe hervor, dass wir über Einsparungen, Microsaving und 20 % Cashback auf Provisionen "
+    "   einen echten finanziellen Vorteil für dich erzeugen – praxisnah, nicht aufdringlich. "
     "5) Nächste Schritte (Lead-Pfad): "
     "   A) Ich nehme jetzt deine Eckdaten auf und bündele sie zur 'Globalen Selbstauskunft' (du erhältst sie von uns). "
     "   B) Oder wir machen direkt einen Rückruf/Termin mit Cashback Finance. "
     "6) Abschlussfrage: 'Sollen wir deine Daten jetzt erfassen oder möchtest du lieber einen Rückruf?' "
     "Regeln: Du-Anrede. Keine Vergleichsportale/DIY-Aufforderungen. Keine Garantien/Zinszusagen. "
-    "Maximal 3 gezielte Nachfragen, wenn Angaben fehlen. DSGVO: Kontakt-/Personendaten nur mit Einwilligung."
+    "Maximal 3 gezielte Nachfragen, wenn Angaben fehlen. DSGVO: Kontakt-/Personendaten nur mit Einwilligung. "
+    "Microsaving-/Beispielrechnungs-Hooks: Wenn der Nutzer 'sparen', 'günstiger', 'Kosten senken', 'Anschluss', 'Forward', "
+    "'Umschuldung', 'Versicherung wechseln', 'Strom', 'Gas', 'Mobilfunk', 'Internet', 'Girokonto', 'Reise' o.ä. anspricht, "
+    "führe eine kurze, klar gekennzeichnete Beispielrechnung durch: "
+    "- Setze eine kleine plausible Annahme (als Beispiel markieren). "
+    "- Nenne 1) monatliche Ersparnis (Microsaving), 2) jährlichen Effekt, 3) ggf. einmaligen Cashback-Betrag. "
+    "- Formuliere so, dass der konkrete Nutzen erkennbar ist und in die nächsten Schritte überleitet."
 )
 
 # --- Wissensblöcke (rechtlich fundierte Kurz-Konzepte) ------------------------
