@@ -1,8 +1,11 @@
-from fastapi import FastAPI, HTTPException
-from typing import List, Dict, Any, Optional
+# main.py
+from __future__ import annotations
+
 import re
-import sys
-import json
+from typing import Dict, List, Optional
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 
 from models import ChatRequest, ChatResponse, ChatMessage, LeadRequest, LeadResponse
 from settings import Settings
@@ -10,305 +13,291 @@ from middleware import attach_cors
 from services.openai_client import chat_completion
 from services import hubspot_client
 
-app = FastAPI(title="Cashback Finance API", version="2.6.0")
+
+# =========================
+# App & Settings
+# =========================
+app = FastAPI(title="Cashback Finance API", version="1.1.0")
 settings = Settings()
 attach_cors(app, settings)
 
-# ---------- PROMPTS ----------
-MASTER_FLOW = (
-    "Arbeitsweise (Kundenakte): "
-    "1) Startformular (Pflicht: Name/Alias, Geburtsdatum, Adresse PLZ/Ort, E-Mail, Telefon, Familienstand, "
-    "Haushaltsgröße, Einkommen netto, Beruf/Status, Erstes Thema). "
-    "2) Themenwahl: Privatkredit, Baufinanzierung, Versicherung, Strom & Gas, Kommunikation, Bausparen, "
-    "Geldanlage/Altersvorsorge, Konto, Reise. "
-    "3) Je Thema nur nötige Felder (max. 3 Fragen pro Turn). "
-    "4) Beispielrechnung mit Hinweis: 'Dies ist eine unverbindliche Beispielrechnung.' "
-    "5) Leadabschluss: Wenn Einwilligung vorliegt, klar bestätigen: 'Ich habe deine Daten sicher an Cashback Finance übermittelt.' "
-    "6) Falls NOCH KEINE Einwilligung (weder UI noch Chat-Text), stelle am ENDE der Datenerfassung IMMER die JA/NEIN-Frage: "
-    "'Möchtest du, dass ich deine Angaben gemäß Datenschutzerklärung an Cashback Finance übermittle?' "
-)
 
-STYLE_GUIDE = (
-    "Stil/Regeln: Du-Ansprache, kurz, klar, seriös; verbraucherschutzkonform; keine Portale/DIY; "
-    "keine Garantien/Zinszusagen; Zahlen immer 'unverbindlich, markt- und bonitätsabhängig'. "
-    "Highlight Mehrwert: Einsparungen, Microsaving, bis zu 20 % Cashback auf Provisionen. "
-    "Wichtig: Sage NIEMALS 'ich kann nicht übermitteln'. Wenn Einwilligung + Kontaktdaten da sind, bestätige die Übermittlung klar."
-)
+# =========================
+# Utility: Regex Finder
+# =========================
+EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
+PHONE_RE = re.compile(r"(?:\+?\d{1,3}[\s\-\/]?)?(?:\(?\d+\)?[\s\-\/]?){5,}")  # großzügig
+ZIP_RE = re.compile(r"\b(\d{5})\b")
+CITY_RE = re.compile(r"\b\d{5}\s+([A-Za-zÄÖÜäöüß\-\.\s]{2,})")
 
-DOMAIN_KNOW = (
-    "Wissen (Kurz): Baufinanzierung/Forward: BGB §§488/491, §34i GewO, PAngV, KfW; "
-    "Privatkredit: BGB §§488–505; Versicherungen: VVG, §34d GewO; Strom/Gas: EnWG; Kommunikation: TKG/§312k; Konto: PSD2."
-)
 
-def build_system_prompt() -> str:
-    base = settings.SYSTEM_PROMPT.strip() if settings.SYSTEM_PROMPT else (
-        "Du bist die KI von Cashback Finance. Sprich konsequent in der Du-Form, hilfsbereit, klar, seriös. "
-        "Ziel: informieren, entlasten und verlässlich zur Zusammenarbeit mit Cashback Finance führen."
-    )
-    return f"{base}\n\n{MASTER_FLOW}\n{STYLE_GUIDE}\n{DOMAIN_KNOW}".strip()
+def _find_email_phone(text: str) -> Dict[str, Optional[str]]:
+    email = None
+    phone = None
 
-# ---------- REGEX ----------
-EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
-PHONE_RE = re.compile(r"(?:(?:\+|00)\d{1,3}[\s-]?)?(?:\(?\d{2,5}\)?[\s-]?)\d[\d\s-]{5,}")
-EURO_RE  = re.compile(r"(?<!\d)(\d{1,3}(?:[.\s]\d{3})*|\d+)(?:[.,]\d+)?\s*(?:€|eur|euro)", re.I)
-PCT_RE   = re.compile(r"(\d+[.,]?\d*)\s*%")
-DATE_RE  = re.compile(r"(\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{2,4})")
-PLZ_RE   = re.compile(r"\b(\d{5})\b")
-
-# Consent
-CONSENT_EXPLICIT = re.compile(
-    r"(ich\s+(stimme|willige)\s+ein|du\s*darfst\s*mich\s*kontaktieren|ihr\s*dürft\s*mich\s*kontaktieren|"
-    r"ja[, ]?\s*bitte\s*kontaktieren|kontaktaufnahme\s*(ist\s*)?erlaubt|einwilligung\s*(ist\s*)?erteilt)",
-    re.I
-)
-CONSENT_INTENT_VERB = r"(übermitteln|weiterleiten|weitergeben|bündeln|aufnehmen|erfassen|senden|schicken)"
-CONSENT_OK_WORD     = r"(ok|okay|in ordnung|einverstanden|passt|ja|bitte|mach|los)"
-CONSENT_KEYWORD_OK  = re.compile(
-    rf"\b{CONSENT_INTENT_VERB}\b.*\b{CONSENT_OK_WORD}\b|\b{CONSENT_OK_WORD}\b.*\b{CONSENT_INTENT_VERB}\b",
-    re.I
-)
-CONSENT_INTENT_SOFT = re.compile(
-    rf"(an\s+cashback\s+finance\s+(schicken|senden|weiterleiten)|"
-    rf"bitte\s+{CONSENT_INTENT_VERB}|"
-    rf"eckdaten\s+{CONSENT_INTENT_VERB}|"
-    rf"global[e]?\s+selbstauskunft\s+(erstellen|anfangen|starten|bündeln)|"
-    rf"{CONSENT_INTENT_VERB})",
-    re.I
-)
-NEGATION_NEAR  = re.compile(r"\b(nicht|kein|keine|nein|stop|stopp|abbrechen)\b", re.I)
-ASSISTANT_ASKS = re.compile(r"(übermitteln|weiterleiten|weitergeben|bündeln|an\s+cashback\s+finance)", re.I)
-USER_AFFIRM    = re.compile(r"\b(ja|ok|okay|passt|einverstanden|mach|bitte|los)\b", re.I)
-
-def _msgs(messages: List[Dict[str, Any]], only_user: bool = False, last_n: int = 30) -> List[Dict[str, Any]]:
-    msgs = messages[-last_n:]
-    if only_user:
-        msgs = [m for m in msgs if m.get("role") == "user"]
-    return msgs
-
-def detect_consent(messages: List[Dict[str, Any]]) -> bool:
-    user_msgs = _msgs(messages, only_user=True, last_n=20)
-    txt = "\n".join([(m.get("content") or "") for m in user_msgs])
-    if CONSENT_EXPLICIT.search(txt):
-        return True
-    if any(CONSENT_KEYWORD_OK.search(m.get("content") or "") for m in user_msgs):
-        if not any(NEGATION_NEAR.search(m.get("content") or "") for m in user_msgs):
-            return True
-    for m in user_msgs:
-        t = m.get("content") or ""
-        if CONSENT_INTENT_SOFT.search(t) and not NEGATION_NEAR.search(t):
-            return True
-    # Kontext: Assistent fragt → Nutzer bejaht
-    last_msgs = messages[-6:]
-    for i in range(len(last_msgs)-1):
-        a, u = last_msgs[i], last_msgs[i+1]
-        if a.get("role") == "assistant" and u.get("role") == "user":
-            if ASSISTANT_ASKS.search(a.get("content") or "") and USER_AFFIRM.search(u.get("content") or ""):
-                if not NEGATION_NEAR.search(u.get("content") or ""):
-                    return True
-    return False
-
-# ---------- Kundenakte ----------
-def _find_email_phone(text: str) -> Dict[str, str]:
-    out = {}
-    emails = EMAIL_RE.findall(text)
-    if emails: out["email"] = emails[-1]
-    ph = PHONE_RE.search(text)
-    if ph: out["phone"] = ph.group(0)
-    return out
-
-def _extract_value_after(label: str, text: str) -> Optional[str]:
-    pat = re.compile(rf"{label}\s*[:\-]?\s*(.+)", re.I)
-    m = pat.search(text)
+    m = EMAIL_RE.search(text or "")
     if m:
-        val = m.group(1).strip().split("\n")[0].strip()
-        return val
-    return None
+        email = m.group(0).strip()
 
-def extract_startformular(full_text: str) -> Dict[str, Any]:
-    sf: Dict[str, Any] = {}
-    for lab, key in [
-        ("Name", "name"), ("Alias", "alias"), ("Geburtsdatum", "geburtsdatum"),
-        ("Adresse", "adresse"), ("PLZ", "plz"), ("Ort", "ort"),
-        ("E-Mail", "email"), ("Telefon", "telefon"), ("Familienstand", "familienstand"),
-        ("Haushaltsgröße", "haushalt"), ("Einkommen", "einkommen_netto"),
-        ("Beruf", "beruf_status"), ("Erstes Beratungsthema", "erstes_thema")
+    # Telefon grob normalisieren (nur Ziffern und +)
+    pm = PHONE_RE.search(text or "")
+    if pm:
+        raw = pm.group(0)
+        digits = re.sub(r"[^\d+]", "", raw)
+        if len(re.sub(r"\D", "", digits)) >= 7:
+            phone = digits
+
+    return {"email": email, "phone": phone}
+
+
+def _split_name(fullname: str) -> Dict[str, Optional[str]]:
+    fullname = (fullname or "").strip()
+    if not fullname:
+        return {"firstname": None, "lastname": None}
+    parts = [p for p in fullname.split() if p.strip()]
+    if len(parts) == 1:
+        return {"firstname": parts[0], "lastname": None}
+    return {"firstname": parts[0], "lastname": " ".join(parts[1:])}
+
+
+# =========================
+# Consent Detection
+# =========================
+AFFIRM = [
+    "ja", "okay", "ok", "mach das", "bitte übermitteln", "du darfst übermitteln",
+    "einverstanden", "zustimmung", "gern", "go", "weitergeben", "weiterleiten",
+    "übermitteln", "übertrage", "senden", "absenden"
+]
+DENY = [
+    "nein", "nicht übermitteln", "kein", "keine übermittlung", "stopp", "stop", "abbrechen"
+]
+
+
+def detect_consent(messages: List[Dict]) -> bool:
+    """
+    True, wenn in der Unterhaltung ausdrücklich zugestimmt wurde,
+    ohne direkt negiert zu werden.
+    """
+    text = " ".join([(m.get("content") or "") for m in messages]).lower()
+    if any(x in text for x in DENY):
+        return False
+    return any(x in text for x in AFFIRM)
+
+
+# =========================
+# Lightweight Dossier Builder
+# (zieht, was zuverlässig erkennbar ist)
+# =========================
+def build_customer_dossier(messages: List[Dict]) -> Dict:
+    """
+    Sehr einfache Extraktion gängiger Felder aus dem Chatverlauf.
+    Alles optional/defensiv. Dient primär dazu, die HubSpot-Note
+    sinnvoll vorzufüllen und Standardfelder zu befüllen.
+    """
+    joined = "\n".join([m.get("content") or "" for m in messages])
+
+    # Name – nimm letzte Nennung nach "Name", "Ich heiße", etc. – fallback: kein Name
+    name = None
+    for pat in [
+        r"(?:name|ich hei(?:s|ß)e|mein name ist)\s*[:\-]?\s*([A-Za-zÄÖÜäöüß\-\.\s]{2,})",
     ]:
-        val = _extract_value_after(lab, full_text)
-        if val: sf[key] = val
-    aux = _find_email_phone(full_text)
-    if "email" not in sf and "email" in aux: sf["email"] = aux["email"]
-    if "telefon" not in sf and "phone" in aux: sf["telefon"] = aux["phone"]
-    if "plz" not in sf:
-        m = PLZ_RE.search(full_text)
-        if m: sf["plz"] = m.group(1)
-    return sf
+        m = re.search(pat, joined, re.IGNORECASE)
+        if m:
+            cand = m.group(1).strip()
+            if 2 <= len(cand) <= 80:
+                name = cand
+                break
 
-def extract_topics(full_text: str) -> Dict[str, Any]:
-    topics: Dict[str, Any] = {}
-    if re.search(r"\b(privatkredit|kredit|umschuldung)\b", full_text, re.I):
-        topics["privatkredit"] = {
-            "summe": _extract_value_after("Darlehenssumme", full_text) or _extract_value_after("Gewünschte Darlehenssumme", full_text),
-            "wunschrate_laufzeit": _extract_value_after("Wunschrate", full_text) or _extract_value_after("Laufzeit", full_text),
-            "verwendungszweck": _extract_value_after("Verwendungszweck", full_text)
-        }
-    if re.search(r"\b(baufinanz|baukredit|immobilie|forward)\b", full_text, re.I):
-        topics["baufinanzierung"] = {
-            "objektwert": _extract_value_after("Objektwert", full_text),
-            "darlehensbedarf": _extract_value_after("Darlehensbedarf", full_text),
-            "eigenkapital": _extract_value_after("Eigenkapital", full_text),
-            "zinsbindung": _extract_value_after("Zinsbindung", full_text)
-        }
-    if re.search(r"\b(versicherung|haftpflicht|hausrat|wohngebäude|bu|pferde)\b", full_text, re.I):
-        topics["versicherung"] = {
-            "bestehend": _extract_value_after("Bestehende Versicherungen", full_text),
-            "jahresbeitrag": _extract_value_after("Jahresbeitrag", full_text),
-            "wechsel": _extract_value_after("Wechselbereitschaft", full_text)
-        }
-    if re.search(r"\b(strom|gas|kwh|pv|photovoltaik)\b", full_text, re.I):
-        topics["strom_gas"] = {
-            "anbieter": _extract_value_after("Anbieter", full_text),
-            "strom_kwh": _extract_value_after("Jahresverbrauch Strom", full_text),
-            "gas_kwh": _extract_value_after("Jahresverbrauch Gas", full_text),
-            "kosten_monat": _extract_value_after("Monatliche Kosten", full_text),
-            "pv": "ja" if re.search(r"\b(pv|photovoltaik)\b", full_text, re.I) else None
-        }
-    if re.search(r"\b(mobilfunk|internet|festnetz|telekom|o2|vodafone|dsl|kabel)\b", full_text, re.I):
-        topics["kommunikation"] = {
-            "anzahl_vertraege": _extract_value_after("Anzahl Verträge", full_text),
-            "anbieter": _extract_value_after("Anbieter", full_text),
-            "kosten_gesamt": _extract_value_after("Monatliche Kosten", full_text),
-            "laufzeiten": _extract_value_after("Vertragslaufzeiten", full_text)
-        }
-    if re.search(r"\b(bauspar|wüstenrot|lbs)\b", full_text, re.I):
-        topics["bausparen"] = {
-            "vertragswert": _extract_value_after("Vertragswert", full_text) or _extract_value_after("Bausparsumme", full_text),
-            "sparrate": _extract_value_after("Sparrate", full_text),
-            "zweck": _extract_value_after("Ziel", full_text) or _extract_value_after("Zweck", full_text)
-        }
-    if re.search(r"\b(geldanlage|vorsorge|etf|rente|riester|rürup|fonds|sparrate|anlagebetrag)\b", full_text, re.I):
-        topics["anlage_vorsorge"] = {
-            "einmalanlage": _extract_value_after("Anlagebetrag (einmalig)", full_text) or _extract_value_after("Einmalanlage", full_text),
-            "sparrate": _extract_value_after("Monatliche Sparrate", full_text),
-            "horizont": _extract_value_after("Zielhorizont", full_text),
-            "risiko": _extract_value_after("Risikoneigung", full_text),
-            "vorhanden": _extract_value_after("Altersvorsorgeformen", full_text)
-        }
-    if re.search(r"\b(konto|konten|hausbank)\b", full_text, re.I):
-        topics["konto"] = {
-            "bestehende_konten": _extract_value_after("Bestehende Konten", full_text),
-            "wechselinteresse": _extract_value_after("Wechselinteresse", full_text)
-        }
-    if re.search(r"\b(reise|urlaub)\b", full_text, re.I):
-        topics["reise"] = {
-            "jahresbudget": _extract_value_after("Jahresbudget", full_text),
-            "gewohnheiten": _extract_value_after("Reisegewohnheiten", full_text)
-        }
-    return topics
+    # Adresse – grob: Straße möglich, aber sicher erfassbar sind PLZ/Ort
+    zipc = None
+    city = None
+    m_zip = ZIP_RE.search(joined)
+    if m_zip:
+        zipc = m_zip.group(1)
+        m_city = CITY_RE.search(joined)
+        if m_city:
+            city = m_city.group(1).strip()
 
-def build_customer_dossier(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
-    full_text = "\n".join([f"{m.get('role')}: {m.get('content','')}" for m in messages])
-    start = extract_startformular(full_text)
-    topics = extract_topics(full_text)
-    euros = [m.group(0) for m in EURO_RE.finditer(full_text)][:20]
-    pcts  = [m.group(1) for m in PCT_RE.finditer(full_text)][:10]
-    dates = [m.group(1) for m in DATE_RE.finditer(full_text)][:10]
+    # Beruf
+    job = None
+    m_job = re.search(r"(?:beruf|status|job|tätigkeit)\s*[:\-]?\s*([A-Za-zÄÖÜäöüß\-\.\s]{2,})", joined, re.IGNORECASE)
+    if m_job:
+        job = m_job.group(1).strip()
+
+    # Einkommen (ca. Angabe)
+    income = None
+    m_inc = re.search(r"(?:einkommen|netto)\s*[:\-]?\s*~?\s*([0-9\.\s]+)\s*€?", joined, re.IGNORECASE)
+    if m_inc:
+        income = m_inc.group(1).strip()
+
+    # schnelle Ableitungen
+    emails_phones = _find_email_phone(joined)
+    name_parts = _split_name(name or "")
+
     return {
-        "startformular": start,
-        "themen": topics,
-        "streu_infos": {"betraege": euros, "prozente": pcts, "daten": dates},
+        "startformular": {
+            "name": name,
+            "firstname": name_parts.get("firstname"),
+            "lastname": name_parts.get("lastname"),
+            "plz": zipc,
+            "ort": city,
+            "beruf_status": job,
+            "einkommen": income,
+            "email": emails_phones.get("email"),
+            "phone": emails_phones.get("phone"),
+        }
     }
 
-def render_note(dossier: Dict[str, Any], tail_chat: List[Dict[str, Any]]) -> str:
-    sf = dossier.get("startformular", {})
-    th = dossier.get("themen", {})
-    def val(x): return x if x else "-"
-    lines = []
-    lines.append("Kundenakte – Kurzprotokoll (automatisch aus Chat) – Cashback Finance\n")
-    lines.append("Startformular:")
-    lines.append(f"- Name/Alias: {val(sf.get('name')) or val(sf.get('alias'))}")
-    lines.append(f"- Geburtsdatum: {val(sf.get('geburtsdatum'))}")
-    lines.append(f"- Adresse/PLZ/Ort: {val(sf.get('adresse'))} / {val(sf.get('plz'))}")
-    lines.append(f"- E-Mail: {val(sf.get('email'))}")
-    lines.append(f"- Telefon: {val(sf.get('telefon'))}")
-    lines.append(f"- Familienstand: {val(sf.get('familienstand'))}")
-    lines.append(f"- Haushalt: {val(sf.get('haushalt'))}")
-    lines.append(f"- Einkommen netto: {val(sf.get('einkommen_netto'))}")
-    lines.append(f"- Beruf/Status: {val(sf.get('beruf_status'))}")
-    lines.append(f"- Erstes Beratungsthema: {val(sf.get('erstes_thema'))}\n")
-    def bl(name: str, d: Dict[str, Any]):
-        if not d: return
-        lines.append(f"{name}:")
-        for k, v in d.items():
-            if v: lines.append(f"- {k.replace('_',' ').title()}: {v}")
-        lines.append("")
-    bl("Privatkredit", th.get("privatkredit", {}))
-    bl("Baufinanzierung", th.get("baufinanzierung", {}))
-    bl("Versicherung", th.get("versicherung", {}))
-    bl("Strom & Gas", th.get("strom_gas", {}))
-    bl("Kommunikation", th.get("kommunikation", {}))
-    bl("Bausparen", th.get("bausparen", {}))
-    bl("Geldanlage/Altersvorsorge", th.get("anlage_vorsorge", {}))
-    bl("Konto", th.get("konto", {}))
-    bl("Reise", th.get("reise", {}))
-    lines.append("Chat-Auszug (letzte Nachrichten):")
-    for m in tail_chat[-8:]:
-        role = m.get("role"); content = (m.get("content") or "").strip()
-        content = content if len(content) <= 500 else content[:497] + "…"
-        lines.append(f"- {role}: {content}")
+
+def render_note(dossier: Dict, messages: List[Dict]) -> str:
+    last_user = ""
+    for m in reversed(messages):
+        if (m.get("role") or "") == "user":
+            last_user = (m.get("content") or "").strip()
+            break
+
+    sf = dossier.get("startformular", {}) or {}
+    lines = [
+        "Kundenakte – Kurzprotokoll (Cashback Finance KI)",
+        "",
+        f"Name: {sf.get('name') or (sf.get('firstname') or '') + ' ' + (sf.get('lastname') or '')}".strip(),
+        f"E-Mail: {sf.get('email') or '-'}",
+        f"Telefon: {sf.get('phone') or '-'}",
+        f"PLZ/Ort: {(sf.get('plz') or '-')}/{(sf.get('ort') or '-')}",
+        f"Beruf/Status: {sf.get('beruf_status') or '-'}",
+        f"Einkommen (ca.): {sf.get('einkommen') or '-'}",
+        "",
+        f"Letzte Nutzerfrage/Intent: {last_user or '-'}",
+        "",
+        "Hinweis: Datenerfassung via Website-Chat, Übermittlung nach Zustimmung im Chat."
+    ]
     return "\n".join(lines)
 
-# ---------- Endpunkte ----------
+
+# =========================
+# System Prompt (DU, Mehrwert & Compliance)
+# =========================
+SYSTEM_PROMPT = (
+    "Du bist die KI von Cashback Finance. Ton: freundlich, klar, lösungsorientiert, DU-Ansprache. "
+    "Ziele: (1) fachlich korrekt beraten, (2) pragmatische Next Steps, (3) dezent Mehrwert von Cashback Finance: "
+    "durch Einsparungen, Microsaving und bis zu 20 % Cashback auf Provisionen entstehen reale Vorteile. "
+    "NIE aufdringlich, sondern hilfreich und transparent. "
+    "Datenschutz: Speichere im Chat keine sensiblen PII dauerhaft. Frage erst, bevor du Daten an Cashback Finance übermittelst. "
+    "Wenn der Nutzer Datenübermittlung wünscht, bestätige kurz und frage nach Name + Kontakt (E-Mail/Telefon), falls noch nicht vorhanden. "
+    "Bei Baufinanzierung: nicht erst Nein, dann Ja – weise proaktiv auf Optionen (z. B. Forward-Darlehen) hin und erkläre kurz die Logik. "
+    "Antworte in kurzen, geordneten Schritten (1., 2., 3.). "
+)
+
+
+# =========================
+# Routes
+# =========================
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    system_prompt = build_system_prompt()
+    """
+    Kern-Endpunkt: AI-Antwort + (bei Consent) HubSpot-Übergabe.
+    """
+    # 1) OpenAI-Aufruf
+    messages_payload = [m.model_dump() for m in req.messages]
+    system_prompt = SYSTEM_PROMPT + " Bitte antworte jetzt präzise auf die letzte Nutzerfrage."
     try:
         assistant_text = chat_completion(
-            messages=[m.model_dump() for m in req.messages],
+            messages=messages_payload,
             system_prompt=system_prompt,
-            model=settings.MODEL_NAME
+            model=settings.MODEL_NAME,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OpenAI error: {e}")
 
-    # Übermittlung nur bei Consent (UI oder Chat) + Kontakt
+    # 2) Consent & HubSpot-Übergabe (defensiv)
     try:
-        msgs = [m.model_dump() for m in req.messages]
-        text_all = "\n".join([m.get("content") or "" for m in msgs])
-        consent_chat = detect_consent(msgs)
-        consent_ui = bool(getattr(req, "lead_opt_in", False))  # UI-Checkbox „Daten übermitteln gemäß Datenschutzerklärung“
+        # gesamter Text der Unterhaltung
+        flat_text = "\n".join([m.get("content") or "" for m in messages_payload])
+
+        consent_chat = detect_consent(messages_payload)
+        consent_ui = bool(getattr(req, "lead_opt_in", False))
         consent = consent_ui or consent_chat
 
-        ids = _find_email_phone(text_all)
-        email_for_hs = req.email or ids.get("email")
-        phone_for_hs = ids.get("phone")
+        # E-Mail/Telefon aus Request + Text
+        ids = _find_email_phone(flat_text)
+        email_for_hs = (req.email or ids.get("email") or "").strip()
+        phone_for_hs = (ids.get("phone") or "").strip()
 
-        print(f"[CONSENT] ui={consent_ui} chat={consent_chat} -> {consent} | email={email_for_hs} | phone={phone_for_hs}", file=sys.stdout, flush=True)
+        # Dossier bauen (Name, PLZ/Ort, Beruf, Income – optional)
+        dossier = build_customer_dossier(messages_payload)
+        sf = dossier.get("startformular", {}) or {}
+
+        # Name splitten
+        firstname = sf.get("firstname")
+        lastname = sf.get("lastname")
+
+        # Falls kein Name im Dossier: versuche minimalen Fallback aus Chat
+        if not (firstname or lastname):
+            # manchmal kommt "Tester Test," Zeile für Zeile
+            first_line = ""
+            for m in req.messages:
+                if m.role == "user":
+                    first_line = (m.content or "").strip().splitlines()[0]
+                    break
+            split = _split_name(first_line)
+            firstname = firstname or split.get("firstname")
+            lastname = lastname or split.get("lastname")
+
+        street = sf.get("address") or ""  # wir extrahieren bewusst nur PLZ/Ort sicher
+        city = sf.get("ort") or None
+        zipc = sf.get("plz") or None
+        jobtitle = sf.get("beruf_status") or None
+
+        print(f"[CONSENT] ui={consent_ui} chat={consent_chat} -> {consent} | email={email_for_hs} | phone={phone_for_hs}", flush=True)
 
         if consent and (email_for_hs or phone_for_hs):
-            dossier = build_customer_dossier(msgs)
-            note_text = render_note(dossier, msgs)
-            contact_id = await hubspot_client.upsert_contact(email_for_hs, None, None, phone_for_hs)
-            print(f"[HUBSPOT] upsert_contact -> {contact_id}", file=sys.stdout, flush=True)
-            if contact_id:
-                await hubspot_client.add_note_to_contact(contact_id, note_text)
-                print("[HUBSPOT] add_note_to_contact -> OK", file=sys.stdout, flush=True)
-    except Exception as e:
-        print(f"[HUBSPOT][ERROR] {e}", file=sys.stdout, flush=True)
+            extra = {"address": street, "city": city or "", "zip": zipc or "", "jobtitle": jobtitle or ""}
+            contact_id = await hubspot_client.upsert_contact(
+                email_for_hs or f"no-email+{phone_for_hs}@example.invalid",
+                firstname=firstname,
+                lastname=lastname,
+                phone=phone_for_hs or None,
+                extra_properties=extra,
+            )
+            print(f"[HUBSPOT] upsert_contact -> {contact_id}", flush=True)
 
+            if contact_id:
+                note_text = render_note(dossier, messages_payload)
+                await hubspot_client.add_note_to_contact(contact_id, note_text)
+                print("[HUBSPOT] add_note_to_contact -> OK", flush=True)
+
+    except Exception as e:
+        # niemals die Chat-Antwort blockieren
+        print(f"[HUBSPOT][ERROR] {e}", flush=True)
+
+    # 3) Antwort an den Client
     return ChatResponse(message=ChatMessage(role="assistant", content=assistant_text))
+
 
 @app.post("/lead", response_model=LeadResponse)
 async def lead(req: LeadRequest):
+    """
+    Optionaler, separater Lead-Endpunkt (falls du direkt Leads posten willst).
+    """
     if not settings.HUBSPOT_PRIVATE_APP_TOKEN:
         return LeadResponse(status="skipped", detail="No HUBSPOT_PRIVATE_APP_TOKEN set")
+
     try:
-        contact_id = await hubspot_client.upsert_contact(req.email, req.firstname, req.lastname, req.phone)
+        contact_id = await hubspot_client.upsert_contact(
+            req.email,
+            firstname=None,
+            lastname=None,
+            phone=req.phone,
+            extra_properties={"address": "", "city": "", "zip": "", "jobtitle": ""},
+        )
         if req.context and contact_id:
             await hubspot_client.add_note_to_contact(contact_id, req.context)
+
         return LeadResponse(status="ok", hubspot_contact_id=contact_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"HubSpot error: {e}")
